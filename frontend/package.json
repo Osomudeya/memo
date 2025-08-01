@@ -1,0 +1,33 @@
+{
+    "name": "humor-memory-game-frontend",
+    "version": "1.0.0",
+    "description": "Frontend for Humor Memory Game - DevOps Learning Edition",
+    "main": "src/scripts/game.js",
+    "scripts": {
+      "dev": "python3 -m http.server 8080 --directory src",
+      "build": "npm run copy-assets && npm run minify",
+      "copy-assets": "mkdir -p dist && cp -r public/* dist/ && cp -r src/* dist/",
+      "minify": "echo 'Minification skipped for simplicity'",
+      "start": "npm run build && python3 -m http.server 8080 --directory dist",
+      "clean": "rm -rf dist",
+      "lint": "echo 'Linting skipped for simplicity'",
+      "test": "echo 'No frontend tests yet'"
+    },
+    "keywords": [
+      "memory-game",
+      "frontend",
+      "vanilla-js",
+      "devops",
+      "learning"
+    ],
+    "author": "DevOps Learning Team",
+    "license": "MIT",
+    "devDependencies": {
+      "http-server": "^14.1.1"
+    },
+    "browserslist": [
+      "> 1%",
+      "last 2 versions",
+      "not dead"
+    ]
+  }
