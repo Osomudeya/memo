@@ -178,6 +178,8 @@ app.use((err, req, res, next) => {
     });
 });
 
+app.disable('etag'); // disable ETag caching completely
+
 // ========================================
 // DATABASE AND REDIS INITIALIZATION
 // ========================================

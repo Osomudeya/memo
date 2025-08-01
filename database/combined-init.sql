@@ -1,11 +1,17 @@
--- Humor Memory Game Database - Combined Schema and Seed Data
--- This file creates the schema first, then seeds data
+-- Fixed Humor Memory Game Database Schema
+-- This file creates the schema and seeds data
 
 -- Enable UUID extension for generating unique IDs
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 
+-- Drop tables if they exist (for clean reset)
+DROP TABLE IF EXISTS game_matches CASCADE;
+DROP TABLE IF EXISTS games CASCADE;
+DROP TABLE IF EXISTS users CASCADE;
+DROP VIEW IF EXISTS leaderboard;
+
 -- Create users table
-CREATE TABLE IF NOT EXISTS users (
+CREATE TABLE users (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     username VARCHAR(50) UNIQUE NOT NULL,
     email VARCHAR(100) UNIQUE,
@@ -21,15 +27,15 @@ CREATE TABLE IF NOT EXISTS users (
 );
 
 -- Create games table to track individual game sessions
-CREATE TABLE IF NOT EXISTS games (
+CREATE TABLE games (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     user_id UUID REFERENCES users(id) ON DELETE CASCADE,
     username VARCHAR(50) NOT NULL, -- denormalized for faster queries
     score INTEGER NOT NULL DEFAULT 0,
     moves INTEGER NOT NULL DEFAULT 0,
-    time_elapsed INTEGER NOT NULL, -- in milliseconds
+    time_elapsed INTEGER NOT NULL DEFAULT 0, -- in milliseconds - FIXED: Added DEFAULT
     cards_matched INTEGER NOT NULL DEFAULT 0,
-    difficulty_level VARCHAR(20) DEFAULT 'easy', -- easy, medium, hard
+    difficulty_level VARCHAR(20) DEFAULT 'easy', -- easy, medium, hard, expert
     game_completed BOOLEAN DEFAULT false,
     started_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     completed_at TIMESTAMP WITH TIME ZONE,
@@ -37,7 +43,7 @@ CREATE TABLE IF NOT EXISTS games (
 );
 
 -- Create game_matches table to track individual card matches
-CREATE TABLE IF NOT EXISTS game_matches (
+CREATE TABLE game_matches (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     game_id UUID REFERENCES games(id) ON DELETE CASCADE,
     card1_id VARCHAR(50) NOT NULL,
@@ -102,47 +108,16 @@ END;
 $$ LANGUAGE plpgsql;
 
 -- Create trigger to automatically update user stats
+DROP TRIGGER IF EXISTS trigger_update_user_stats ON games;
 CREATE TRIGGER trigger_update_user_stats
     AFTER UPDATE ON games
     FOR EACH ROW
     EXECUTE FUNCTION update_user_stats();
 
--- Create function to get user statistics
-CREATE OR REPLACE FUNCTION get_user_stats(p_username VARCHAR(50))
-RETURNS TABLE(
-    username VARCHAR(50),
-    total_games INTEGER,
-    total_score INTEGER,
-    best_score INTEGER,
-    best_time INTEGER,
-    avg_score NUMERIC,
-    rank BIGINT,
-    last_played TIMESTAMP WITH TIME ZONE
-) AS $$
-BEGIN
-    RETURN QUERY
-    SELECT 
-        l.username,
-        l.total_games,
-        l.total_score,
-        l.best_score,
-        l.best_time,
-        l.avg_score,
-        l.rank,
-        l.last_played
-    FROM leaderboard l
-    WHERE l.username = p_username;
-END;
-$$ LANGUAGE plpgsql;
-
 -- Grant permissions to the game user
 GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO gameuser;
 GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO gameuser;
 GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA public TO gameuser;
-
--- ========================================
--- SEED DATA - Insert sample users and games
--- ========================================
 
 -- Insert sample users with funny usernames
 INSERT INTO users (username, email, display_name, total_games, total_score, best_score, best_time, last_played) VALUES
@@ -164,7 +139,7 @@ BEGIN
     RAISE NOTICE '🎮 ========================================';
     RAISE NOTICE 'Schema created: users, games, game_matches';
     RAISE NOTICE 'Views created: leaderboard';
-    RAISE NOTICE 'Functions created: update_user_stats, get_user_stats';
+    RAISE NOTICE 'Functions created: update_user_stats';
     RAISE NOTICE 'Sample data inserted: 8 funny users';
     RAISE NOTICE '🚀 Ready for some hilarious memory gaming! 🃏✨';
     RAISE NOTICE '🎮 ========================================';

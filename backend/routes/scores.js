@@ -141,22 +141,22 @@ async function getUserAchievements(username, userStats) {
         }
 
         // Check for perfect games (would need additional database query)
-        // const perfectGames = await database.query(`
-        //     SELECT COUNT(*) as perfect_count 
-        //     FROM games 
-        //     WHERE username = $1 AND game_completed = true AND moves = cards_matched
-        // `, [username]);
+        const perfectGames = await database.query(`
+            SELECT COUNT(*) as perfect_count 
+            FROM games 
+            WHERE username = $1 AND game_completed = true AND moves = cards_matched
+        `, [username]);
 
-        // if (perfectGames.rows[0].perfect_count > 0) {
-        //     achievements.push({
-        //         id: 'perfect_game',
-        //         title: 'Flawless Victory! 💎',
-        //         description: 'Completed a game with perfect accuracy',
-        //         icon: '💎',
-        //         rarity: 'epic',
-        //         unlockedAt: userStats.last_played
-        //     });
-        // }
+        if (perfectGames.rows[0].perfect_count > 0) {
+            achievements.push({
+                id: 'perfect_game',
+                title: 'Flawless Victory! 💎',
+                description: 'Completed a game with perfect accuracy',
+                icon: '💎',
+                rarity: 'epic',
+                unlockedAt: userStats.last_played
+            });
+        }
 
         return achievements;
     } catch (error) {
@@ -346,8 +346,250 @@ router.post('/user', (req, res) => {
     res.json({ success: true, message: 'User creation route working!' });
 });
 
-router.get('/:username', (req, res) => {
-    res.json({ success: true, message: 'User stats route working!' });
+// router.get('/:username', (req, res) => {
+//     res.json({ success: true, message: 'User stats route working!' });
+// });
+
+router.get('/:username', async (req, res) => {
+    try {
+        const username = req.params.username;
+
+        // Placeholder: Replace with actual DB call
+        const userStats = {
+            best_score: 193,
+            total_games: 1,
+            best_time: 108393,
+            last_played: new Date(),
+            rank: 42
+        };
+
+        const user = {
+            username,
+            bestScore: userStats.best_score,
+            totalGames: userStats.total_games
+        };
+
+        const statistics = {
+            fastestTime: `${(userStats.best_time / 1000).toFixed(1)}s`,
+            averageScore: userStats.best_score,
+            globalRank: userStats.rank
+        };
+
+        const performance = {
+            level: getPerformanceLevel(userStats.best_score),
+            rating: getGamePerformance(userStats.best_score, 'easy')
+        };
+
+        const gameHistory = await getRecentGames(username);
+        const achievements = await getUserAchievements(username, userStats);
+        const message = getMotivationalMessage(userStats);
+
+        res.setHeader('Cache-Control', 'no-store');
+        res.json({
+            user,
+            statistics,
+            performance,
+            gameHistory,
+            achievements,
+            message
+        });
+    } catch (error) {
+        console.error('Error loading stats:', error);
+        res.status(500).json({ error: 'Failed to load stats' });
+    }
 });
+
+
+router.get('/:username', async (req, res) => {
+    try {
+        const { username } = req.params;
+        const { includeHistory = false } = req.query;
+
+        const user = mockUsers.get(username);
+        
+        if (!user) {
+            return res.status(404).json({
+                success: false,
+                error: 'User not found',
+                message: `User "${username}" hasn't played any games yet! 🎮`,
+                suggestion: 'Start your first game to see stats here! 🚀'
+            });
+        }
+
+        // Mock user statistics
+        const userStats = {
+            username: user.username,
+            total_games: user.total_games,
+            total_score: user.total_games * 85, // Mock total score
+            best_score: user.best_score || 120,
+            best_time: 45000, // Mock best time
+            avg_score: user.total_games > 0 ? 85 : 0,
+            rank: Math.floor(Math.random() * 100) + 1, // Mock rank
+            last_played: user.last_played
+        };
+
+        const responseData = {
+            success: true,
+            user: {
+                username: userStats.username,
+                totalGames: userStats.total_games,
+                totalScore: userStats.total_score,
+                bestScore: userStats.best_score,
+                bestTime: userStats.best_time,
+                averageScore: userStats.avg_score,
+                rank: userStats.rank,
+                lastPlayed: userStats.last_played
+            },
+            statistics: {
+                gamesPlayed: userStats.total_games,
+                totalPoints: userStats.total_score,
+                highScore: userStats.best_score,
+                fastestTime: userStats.best_time ? `${(userStats.best_time / 1000).toFixed(1)}s` : null,
+                averageScore: userStats.avg_score,
+                globalRank: userStats.rank,
+                accuracy: '85.5', // Mock accuracy
+                favoriteCategory: 'classic' // Mock category
+            },
+            performance: {
+                level: {
+                    level: userStats.best_score >= 200 ? 'Advanced' : userStats.best_score >= 100 ? 'Intermediate' : 'Beginner',
+                    emoji: userStats.best_score >= 200 ? '⭐' : userStats.best_score >= 100 ? '🎯' : '🌱',
+                    color: userStats.best_score >= 200 ? '#4169E1' : userStats.best_score >= 100 ? '#32CD32' : '#808080'
+                },
+                progressToNext: {
+                    isMaxLevel: userStats.best_score >= 300,
+                    pointsNeeded: Math.max(0, 200 - userStats.best_score)
+                },
+                achievements: [
+                    {
+                        id: 'first_game',
+                        title: 'First Steps! 👶',
+                        description: 'Completed your first memory game',
+                        icon: '🎮',
+                        rarity: 'common'
+                    }
+                ]
+            },
+            message: this.getMotivationalMessage(userStats)
+        };
+
+        // Include mock game history if requested
+        if (includeHistory === 'true') {
+            responseData.gameHistory = [
+                {
+                    score: 120,
+                    difficulty: 'easy',
+                    completedAt: new Date(Date.now() - 86400000), // 1 day ago
+                    duration: '1:15'
+                },
+                {
+                    score: 95,
+                    difficulty: 'easy',
+                    completedAt: new Date(Date.now() - 172800000), // 2 days ago
+                    duration: '1:45'
+                }
+            ].slice(0, userStats.total_games);
+        }
+
+        console.log(`📊 Stats retrieved for ${username}: ${userStats.total_games} games`);
+
+        res.json(responseData);
+
+    } catch (error) {
+        console.error('❌ Error getting user scores:', error);
+        res.status(500).json({
+            success: false,
+            error: 'Failed to get user scores',
+            message: 'Couldn\'t load your stats right now! 📊'
+        });
+    }
+});
+
+router.get('/:username/history', async (req, res) => {
+    try {
+        const { username } = req.params;
+        const { limit = 10, offset = 0 } = req.query;
+
+        const user = mockUsers.get(username);
+        
+        if (!user) {
+            return res.status(404).json({
+                success: false,
+                error: 'User not found',
+                message: 'User not found! 🔍'
+            });
+        }
+
+        // Mock game history
+        const gameHistory = [];
+        for (let i = 0; i < Math.min(user.total_games, parseInt(limit)); i++) {
+            gameHistory.push({
+                gameId: uuidv4(),
+                score: Math.floor(Math.random() * 200) + 50,
+                moves: Math.floor(Math.random() * 20) + 16,
+                timeElapsed: Math.floor(Math.random() * 180000) + 30000,
+                cardsMatched: 8,
+                difficulty: 'easy',
+                startedAt: new Date(Date.now() - (i + 1) * 86400000),
+                completedAt: new Date(Date.now() - (i + 1) * 86400000 + 120000),
+                duration: `${Math.floor(Math.random() * 3) + 1}:${Math.floor(Math.random() * 60).toString().padStart(2, '0')}`,
+                accuracy: (Math.random() * 30 + 70).toFixed(1)
+            });
+        }
+
+        res.json({
+            success: true,
+            gameHistory,
+            pagination: {
+                total: user.total_games,
+                limit: parseInt(limit),
+                offset: parseInt(offset),
+                hasMore: parseInt(offset) + parseInt(limit) < user.total_games
+            },
+            summary: {
+                totalGames: gameHistory.length,
+                averageScore: gameHistory.length > 0 
+                    ? Math.round(gameHistory.reduce((sum, game) => sum + game.score, 0) / gameHistory.length)
+                    : 0,
+                bestGame: gameHistory.length > 0 
+                    ? gameHistory.reduce((best, game) => game.score > best.score ? game : best)
+                    : null
+            }
+        });
+
+    } catch (error) {
+        console.error('❌ Error getting game history:', error);
+        res.status(500).json({
+            success: false,
+            error: 'Failed to get game history',
+            message: 'Couldn\'t load your game history! 📚'
+        });
+    }
+});
+
+// ========================================
+// HELPER FUNCTIONS
+// ========================================
+
+function getMotivationalMessage(userStats) {
+    const messages = [
+        "🌱 Every expert was once a beginner! Keep playing!",
+        "🎯 You're making progress! Keep up the good work!",
+        "🔥 You're getting good at this! Keep the momentum!",
+        "🏆 Outstanding performance! You're almost a master!",
+        "🧠 Memory Master level achieved! Incredible!"
+    ];
+
+    let level = 0;
+    if (userStats.best_score >= 300) level = 4;
+    else if (userStats.best_score >= 200) level = 3;
+    else if (userStats.best_score >= 150) level = 2;
+    else if (userStats.best_score >= 100) level = 1;
+
+    return messages[level];
+}
+
+// Bind helper to router
+router.getMotivationalMessage = getMotivationalMessage;
 
 module.exports = router;

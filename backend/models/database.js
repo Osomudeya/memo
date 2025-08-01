@@ -1,28 +1,35 @@
-// Database Connection and Query Manager
-// PostgreSQL connection handling with connection pooling
-
+// Fixed Database Connection with Retry Logic
 const { Pool } = require('pg');
 
-// Database configuration from environment variables
+// Database configuration with better retry settings
 const dbConfig = {
     host: process.env.DB_HOST || 'localhost',
     port: parseInt(process.env.DB_PORT) || 5432,
     database: process.env.DB_NAME || 'humor_memory_game',
     user: process.env.DB_USER || 'gameuser',
     password: process.env.DB_PASSWORD || 'gamepass123',
-    max: parseInt(process.env.DB_MAX_CONNECTIONS) || 20, // Maximum number of connections
-    idleTimeoutMillis: parseInt(process.env.DB_IDLE_TIMEOUT) || 30000, // Close idle connections after 30 seconds
-    connectionTimeoutMillis: parseInt(process.env.DB_CONNECTION_TIMEOUT) || 2000, // Return error after 2 seconds if connection could not be established
-    ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false
+    max: parseInt(process.env.DB_MAX_CONNECTIONS) || 20,
+    idleTimeoutMillis: parseInt(process.env.DB_IDLE_TIMEOUT) || 30000,
+    connectionTimeoutMillis: parseInt(process.env.DB_CONNECTION_TIMEOUT) || 10000, // Increased from 2000
+    ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false,
+    // Add retry configuration
+    query_timeout: 60000,
+    statement_timeout: 60000,
+    // Connection retry settings
+    acquire_timeout_millis: 60000,
+    create_timeout_millis: 30000,
+    destroy_timeout_millis: 5000,
+    reap_interval_millis: 1000,
+    create_retry_interval_millis: 200
 };
 
 // Create connection pool
 const pool = new Pool(dbConfig);
 
-// Handle pool errors
+// Enhanced error handling
 pool.on('error', (err, client) => {
     console.error('❌ Unexpected database pool error:', err);
-    // Don't exit the process, let the application handle the error
+    // Log but don't exit - let the retry logic handle it
 });
 
 pool.on('connect', (client) => {
@@ -33,62 +40,59 @@ pool.on('remove', (client) => {
     console.log('🔌 Database client removed from pool');
 });
 
-// ========================================
-// DATABASE OPERATIONS
-// ========================================
+pool.on('acquire', () => {
+    console.log('📦 Database client acquired from pool');
+});
 
-class Database {
+// Unified Database Class with Retry Logic
+class HumorGameDatabase {
+    constructor() {
+        this.pool = pool;
+        this.isConnected = false;
+    }
+
     /**
-     * Execute a query with optional parameters
-     * @param {string} text - SQL query string
-     * @param {Array} params - Query parameters
-     * @returns {Promise<Object>} Query result
+     * Execute a query with retry logic
      */
     async query(text, params = []) {
-        const start = Date.now();
-        try {
-            const result = await pool.query(text, params);
-            const duration = Date.now() - start;
-            
-            // Log slow queries (over 100ms)
-            if (duration > 100) {
-                console.warn(`🐌 Slow query detected (${duration}ms):`, text.substring(0, 100));
+        const maxRetries = 3;
+        const retryDelay = 1000;
+        let lastError;
+
+        for (let attempt = 1; attempt <= maxRetries; attempt++) {
+            try {
+                const start = Date.now();
+                const result = await this.pool.query(text, params);
+                const duration = Date.now() - start;
+                
+                if (duration > 100) {
+                    console.warn(`🐌 Slow query detected (${duration}ms):`, text.substring(0, 100));
+                }
+                
+                // Mark as connected on successful query
+                this.isConnected = true;
+                return result;
+            } catch (error) {
+                lastError = error;
+                console.error(`❌ Database query error (attempt ${attempt}/${maxRetries}):`, error.message);
+                
+                if (attempt < maxRetries) {
+                    console.log(`⏳ Retrying query in ${retryDelay}ms...`);
+                    await new Promise(resolve => setTimeout(resolve, retryDelay));
+                } else {
+                    console.error('Query:', text);
+                    console.error('Params:', params);
+                    this.isConnected = false;
+                    throw error;
+                }
             }
-            
-            return result;
-        } catch (error) {
-            console.error('❌ Database query error:', error);
-            console.error('Query:', text);
-            console.error('Params:', params);
-            throw error;
         }
-    }
-
-    /**
-     * Execute a transaction with multiple queries
-     * @param {Function} callback - Function containing transaction logic
-     * @returns {Promise<any>} Transaction result
-     */
-    async transaction(callback) {
-        const client = await pool.connect();
         
-        try {
-            await client.query('BEGIN');
-            const result = await callback(client);
-            await client.query('COMMIT');
-            return result;
-        } catch (error) {
-            await client.query('ROLLBACK');
-            console.error('❌ Transaction error:', error);
-            throw error;
-        } finally {
-            client.release();
-        }
+        throw lastError;
     }
 
     /**
-     * Test database connection
-     * @returns {Promise<boolean>} Connection status
+     * Test database connection with retry
      */
     async testConnection() {
         try {
@@ -96,77 +100,34 @@ class Database {
             console.log('✅ Database connection test successful');
             console.log(`⏰ Current time: ${result.rows[0].current_time}`);
             console.log(`🐘 PostgreSQL version: ${result.rows[0].version.split(' ')[1]}`);
+            this.isConnected = true;
             return true;
         } catch (error) {
-            console.error('❌ Database connection test failed:', error);
+            console.error('❌ Database connection test failed:', error.message);
+            this.isConnected = false;
             throw error;
         }
     }
 
     /**
-     * Get database statistics
-     * @returns {Promise<Object>} Database stats
+     * Check if database is connected
      */
-    async getStats() {
+    async isHealthy() {
         try {
-            const stats = await this.query(`
-                SELECT 
-                    (SELECT COUNT(*) FROM users) as total_users,
-                    (SELECT COUNT(*) FROM games) as total_games,
-                    (SELECT COUNT(*) FROM games WHERE game_completed = true) as completed_games,
-                    (SELECT COUNT(*) FROM game_matches) as total_matches,
-                    (SELECT MAX(best_score) FROM users) as highest_score,
-                    (SELECT COUNT(*) FROM users WHERE last_played > NOW() - INTERVAL '24 hours') as active_users_24h
-            `);
-            
-            return stats.rows[0];
+            await this.query('SELECT 1');
+            return true;
         } catch (error) {
-            console.error('❌ Error getting database stats:', error);
-            throw error;
+            return false;
         }
     }
 
-    /**
-     * Close all database connections
-     * @returns {Promise<void>}
-     */
-    async close() {
-        try {
-            await pool.end();
-            console.log('🔌 Database connection pool closed');
-        } catch (error) {
-            console.error('❌ Error closing database connections:', error);
-            throw error;
-        }
-    }
-
-    /**
-     * Get connection pool status
-     * @returns {Object} Pool status information
-     */
-    getPoolStatus() {
-        return {
-            totalCount: pool.totalCount,
-            idleCount: pool.idleCount,
-            waitingCount: pool.waitingCount
-        };
-    }
-}
-
-// ========================================
-// USER-RELATED QUERIES
-// ========================================
-
-class UserQueries extends Database {
     /**
      * Create or get user by username
-     * @param {string} username - User's username
-     * @param {string} email - User's email (optional)
-     * @param {string} displayName - User's display name (optional)
-     * @returns {Promise<Object>} User object
      */
     async createOrGetUser(username, email = null, displayName = null) {
         try {
+            console.log(`🔍 Looking for user: ${username}`);
+            
             // First, try to get existing user
             const existingUser = await this.query(
                 'SELECT * FROM users WHERE username = $1',
@@ -174,10 +135,12 @@ class UserQueries extends Database {
             );
 
             if (existingUser.rows.length > 0) {
+                console.log(`✅ Found existing user: ${username}`);
                 return existingUser.rows[0];
             }
 
             // Create new user if doesn't exist
+            console.log(`🆕 Creating new user: ${username}`);
             const newUser = await this.query(`
                 INSERT INTO users (username, email, display_name)
                 VALUES ($1, $2, $3)
@@ -193,59 +156,13 @@ class UserQueries extends Database {
     }
 
     /**
-     * Get user statistics
-     * @param {string} username - User's username
-     * @returns {Promise<Object>} User stats
-     */
-    async getUserStats(username) {
-        try {
-            const stats = await this.query(
-                'SELECT * FROM get_user_stats($1)',
-                [username]
-            );
-
-            return stats.rows[0] || null;
-        } catch (error) {
-            console.error('❌ Error getting user stats:', error);
-            throw error;
-        }
-    }
-
-    /**
-     * Update user's last played time
-     * @param {string} userId - User's ID
-     * @returns {Promise<void>}
-     */
-    async updateLastPlayed(userId) {
-        try {
-            await this.query(
-                'UPDATE users SET last_played = CURRENT_TIMESTAMP WHERE id = $1',
-                [userId]
-            );
-        } catch (error) {
-            console.error('❌ Error updating last played:', error);
-            throw error;
-        }
-    }
-}
-
-// ========================================
-// GAME-RELATED QUERIES
-// ========================================
-
-class GameQueries extends Database {
-    /**
      * Create a new game session
-     * @param {string} userId - User's ID
-     * @param {string} username - User's username
-     * @param {string} difficulty - Game difficulty
-     * @returns {Promise<Object>} Game object
      */
     async createGame(userId, username, difficulty = 'easy') {
         try {
             const game = await this.query(`
-                INSERT INTO games (user_id, username, difficulty_level, game_data)
-                VALUES ($1, $2, $3, $4)
+                INSERT INTO games (user_id, username, difficulty_level, game_data, time_elapsed, cards_matched)
+                VALUES ($1, $2, $3, $4, 0, 0)
                 RETURNING *
             `, [userId, username, difficulty, JSON.stringify({ difficulty, started: new Date() })]);
 
@@ -258,13 +175,7 @@ class GameQueries extends Database {
     }
 
     /**
-     * Complete a game and calculate final score
-     * @param {string} gameId - Game ID
-     * @param {number} score - Final score
-     * @param {number} moves - Number of moves
-     * @param {number} timeElapsed - Time elapsed in milliseconds
-     * @param {number} cardsMatched - Number of cards matched
-     * @returns {Promise<Object>} Updated game object
+     * Complete a game
      */
     async completeGame(gameId, score, moves, timeElapsed, cardsMatched) {
         try {
@@ -295,13 +206,6 @@ class GameQueries extends Database {
 
     /**
      * Record a card match
-     * @param {string} gameId - Game ID
-     * @param {string} card1Id - First card ID
-     * @param {string} card2Id - Second card ID
-     * @param {number} matchTime - Time when match was made
-     * @param {number} points - Points earned
-     * @param {number} bonusPoints - Bonus points
-     * @returns {Promise<Object>} Match object
      */
     async recordMatch(gameId, card1Id, card2Id, matchTime, points = 10, bonusPoints = 0) {
         try {
@@ -319,14 +223,71 @@ class GameQueries extends Database {
     }
 
     /**
-     * Get leaderboard data
-     * @param {number} limit - Number of top players to return
-     * @returns {Promise<Array>} Leaderboard array
+     * Get user statistics
+     */
+    async getUserStats(username) {
+        try {
+            const stats = await this.query(`
+                SELECT 
+                    u.username,
+                    u.total_games,
+                    u.total_score,
+                    u.best_score,
+                    u.best_time,
+                    CASE 
+                        WHEN u.total_games > 0 THEN ROUND(u.total_score::decimal / u.total_games, 2)
+                        ELSE 0 
+                    END as avg_score,
+                    u.last_played,
+                    (SELECT COUNT(*) + 1 FROM users u2 WHERE u2.best_score > u.best_score) as rank
+                FROM users u
+                WHERE u.username = $1
+            `, [username]);
+
+            return stats.rows[0] || null;
+        } catch (error) {
+            console.error('❌ Error getting user stats:', error);
+            throw error;
+        }
+    }
+
+    /**
+     * Update user's last played time
+     */
+    async updateLastPlayed(userId) {
+        try {
+            await this.query(
+                'UPDATE users SET last_played = CURRENT_TIMESTAMP WHERE id = $1',
+                [userId]
+            );
+        } catch (error) {
+            console.error('❌ Error updating last played:', error);
+            throw error;
+        }
+    }
+
+    /**
+     * Get leaderboard
      */
     async getLeaderboard(limit = 10) {
         try {
             const leaderboard = await this.query(`
-                SELECT * FROM leaderboard
+                SELECT 
+                    u.username,
+                    u.display_name,
+                    u.total_games,
+                    u.total_score,
+                    u.best_score,
+                    u.best_time,
+                    u.last_played,
+                    CASE 
+                        WHEN u.total_games > 0 THEN ROUND(u.total_score::decimal / u.total_games, 2)
+                        ELSE 0 
+                    END as avg_score,
+                    ROW_NUMBER() OVER (ORDER BY u.best_score DESC, u.best_time ASC) as rank
+                FROM users u
+                WHERE u.is_active = true AND u.total_games > 0
+                ORDER BY u.best_score DESC, u.best_time ASC
                 LIMIT $1
             `, [limit]);
 
@@ -336,19 +297,31 @@ class GameQueries extends Database {
             throw error;
         }
     }
-}
 
-// Create instances combining both classes
-class HumorGameDatabase extends UserQueries {
-    constructor() {
-        super();
-        // Add game queries to the instance
-        Object.setPrototypeOf(this, Object.create(GameQueries.prototype));
-        Object.getOwnPropertyNames(GameQueries.prototype).forEach(name => {
-            if (name !== 'constructor') {
-                this[name] = GameQueries.prototype[name];
-            }
-        });
+    /**
+     * Close database connections
+     */
+    async close() {
+        try {
+            await this.pool.end();
+            console.log('🔌 Database connection pool closed');
+            this.isConnected = false;
+        } catch (error) {
+            console.error('❌ Error closing database connections:', error);
+            throw error;
+        }
+    }
+
+    /**
+     * Get connection pool status
+     */
+    getPoolStatus() {
+        return {
+            totalCount: this.pool.totalCount,
+            idleCount: this.pool.idleCount,
+            waitingCount: this.pool.waitingCount,
+            isConnected: this.isConnected
+        };
     }
 }
 
